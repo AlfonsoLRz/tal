@@ -111,7 +111,6 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     else:
         H_1 = H_1.reshape(volume_xyz_shape)
 
-    print(H_1.shape, H_1.dtype)
     return H_1
 
 

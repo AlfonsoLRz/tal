@@ -2,6 +2,7 @@ from tal.io.capture_data import NLOSCaptureData
 from tal.enums import HFormat
 from tal.config import get_resources
 from tal.log import log, LogLevel, TQDMLogRedirect
+import cupy as cp
 import numpy as np
 from tqdm import tqdm
 
@@ -183,45 +184,35 @@ def filter_H_impl(data, filter_name, data_format, border, plot_filter, return_fi
         mode = 'constant'
     K_shape = (nt_pad,) + (1,) * (H.ndim - 1)
 
-    def work(H):
-        if progress:
-            pbar = tqdm(
-                total=3,
-                desc=f'tal.reconstruct.filter_H ({filter_name}, 1/3)',
-                file=TQDMLogRedirect(),
-                position=0,
-                leave=True)
-        H_pad = np.pad(H,
-                       ((padding, padding),) +  # first dim (time)
-                       ((0, 0),) * (H.ndim - 1),  # other dims
-                       mode=mode)
-        H_fft = np.fft.fft(H_pad, axis=0).astype(np.complex64)
-        if progress:
-            pbar.set_description(
-                f'tal.reconstruct.filter_H ({filter_name}, 2/3)')
-            pbar.update(1)
-        K_fft = np.fft.fft(K)
-        H_fft *= K_fft.reshape(K_shape)
-        del K_fft
-        if progress:
-            pbar.set_description(
-                f'tal.reconstruct.filter_H ({filter_name}, 3/3)')
-            pbar.update(1)
-        HoK = np.fft.ifft(H_fft, axis=0).astype(np.complex64)
-        del H_fft
-        if progress:
-            pbar.update(1)
-            pbar.close()
-        return HoK
+    if progress:
+        pbar = tqdm(total=3, desc=f'Filtering ({filter_name}, 1/3)', position=0, leave=True)
 
-    HoK = np.zeros((nt_pad,) + H.shape[1:], dtype=np.complex64)
+    d_H = cp.asarray(H).astype(np.complex64)
+    d_K = cp.asarray(K).astype(np.complex64)
+    d_H_pad = cp.pad(d_H,
+                    ((padding, padding),) +          # time
+                    ((0, 0),) * (H.ndim - 1),        # other dims
+                    mode=mode)
 
-    get_resources().split_work(
-        work,
-        data_in=H,
-        data_out=HoK,
-        slice_dims=(1, 1),
-    )
+    if progress:
+        pbar.set_description(f'Filtering ({filter_name}, 2/3)')
+        pbar.update(1)
+
+    d_H_fft = cp.fft.fft(d_H_pad, axis=0)
+    d_K_fft = cp.fft.fft(d_K)  
+    d_H_fft *= d_K_fft.reshape(K_shape) 
+
+    if progress:
+        pbar.set_description(f'Filtering ({filter_name}, 3/3)')
+        pbar.update(1)
+
+    d_HoK = cp.fft.ifft(d_H_fft, axis=0).astype(cp.complex64)
+
+    if progress:
+        pbar.update(1)
+        pbar.close()
+
+    HoK = d_HoK.real.get()  # Convert back to numpy array
 
     # undo padding
     HoK = HoK[padding:-padding, ...]
