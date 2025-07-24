@@ -1,6 +1,9 @@
 from tal.config import get_resources
 from tal.log import log, LogLevel, TQDMLogRedirect
+import cupy as cp
+from numba import cuda
 import numpy as np
+import math
 from tqdm import tqdm
 
 
@@ -18,6 +21,7 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
 
     nt, nl, ns = H_0.shape
     nv, _ = volume_xyz.shape
+
     if is_laser_paired_to_sensor:
         assert laser_grid_xyz.shape[0] == ns, 'H does not match with laser_grid_xyz'
     else:
@@ -78,68 +82,103 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     else:
         d_2 = np.float32(0.0)
 
-    def backproject_i(subrange_s):
-        nsi = len(subrange_s)
-        H_0_i = H_0[:, :, subrange_s]
-        if is_laser_paired_to_sensor:
-            d_2_i = d_2[:, :, subrange_s]
-        else:
-            d_2_i = d_2
-        sensor_grid_xyz_i = sensor_grid_xyz[:, :, subrange_s, :]
-        d_3 = 0
-        if camera_system.bp_accounts_for_d_3():
-            d_3 = distance(volume_xyz, sensor_grid_xyz_i)
-        d_4_i = d_4[:, :, subrange_s]
+    d_H_0 = cuda.to_device(H_0)
+    d_d_1 = cuda.to_device(d_1)
+    d_d_2 = cuda.to_device(d_2)
+    d_d_4 = cuda.to_device(d_4)
+    d_sensor_xyz = cuda.to_device(sensor_grid_xyz)
+    d_volume_xyz = cuda.to_device(volume_xyz)
+    if camera_system.is_transient():
+        d_H_1 = cuda.to_device(np.zeros((nt, nv), dtype=H_0.dtype))
+    else:
+        d_H_1 = cuda.to_device(np.zeros((nv,), dtype=H_0.dtype))
 
-        invsq = 1
-        if compensate_invsq:
-            def c(d):
-                if isinstance(d, int) and d == 0:
-                    return 1
-                term = np.ones_like(d)
-                epsilon = 1e-4
-                term[d > epsilon] = d[d > epsilon] ** 2
-                return term
-
-            invsq = c(d_1) * c(d_2_i) * c(d_3) * c(d_4_i)
-
-        idx = d_1 + d_2_i + d_3 + d_4_i - t_start
-        idx /= delta_t
-        idx = idx.astype(np.int32)
-
-        t_range = nt if camera_system.is_transient() else 1
-        t_range = np.arange(t_range, dtype=np.int32)
-        if progress and len(t_range) > 1:
-            t_range = tqdm(t_range, file=TQDMLogRedirect(),
-                           desc='tal.reconstruct.bp time bins',
-                           position=0,
-                           leave=True)
-
-        H_1_i = np.zeros((len(t_range), nv), dtype=H_0.dtype)
-        i_v, i_s = np.ogrid[:nv, :nsi]
-        for i_t in t_range:
-            for i_l in range(nl):
-                idx_i = idx[i_l, ...] + i_t
-                good = np.logical_and(idx_i >= 0, idx_i < nt)
-                idx_i[~good] = 0
-                H_1_raw = H_0_i[idx_i[i_v, i_s], i_l, i_s]
-                if compensate_invsq:
-                    H_1_raw *= invsq[i_l]
-                H_1_raw[~good] = 0.0
-                H_1_i[i_t, :] += H_1_raw.sum(axis=1)
-
-        if camera_system.is_transient():
-            return H_1_i.reshape((nt, *volume_xyz_shape))
-        else:
-            return H_1_i[0].reshape(volume_xyz_shape)
-
-    range_s = np.arange(ns, dtype=np.int32)
-
-    get_resources().split_work(
-        backproject_i,
-        data_in=range_s,
-        data_out=H_1,
-        slice_dims=(0, None),
+    threads_per_block = (16, 16, 4)
+    blocks_per_grid = (
+        (nv + threads_per_block[0] - 1) // threads_per_block[0],
+        (nl + threads_per_block[1] - 1) // threads_per_block[1],
+        (ns + threads_per_block[2] - 1) // threads_per_block[2],
     )
+    
+    backproject_numba[blocks_per_grid, threads_per_block](d_H_0, d_d_1, d_d_2, d_d_4, d_sensor_xyz, d_volume_xyz, d_H_1,
+                                                            t_start, delta_t, compensate_invsq, is_laser_paired_to_sensor,
+                                                            camera_system.is_transient(),)
 
+    H_1 = d_H_1.copy_to_host()
+
+    if camera_system.is_transient():
+        H_1 = H_1.reshape((nt, *volume_xyz_shape))
+    else:
+        H_1 = H_1.reshape(volume_xyz_shape)
+
+    print(H_1.shape, H_1.dtype)
     return H_1
+
+
+@cuda.jit(device=True)
+def calculate_distance_squared(a, b):
+    """Optimized distance squared calculation"""
+    return (a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2
+
+
+@cuda.jit
+def backproject_numba(
+        d_H_0,          # [nt, nl, ns]
+        d_d_1,          # [nl, 1, 1]
+        d_d_2,          # [nl, nv] or [nl, nv, ns]
+        d_d_4,          # [1, 1, ns]
+        d_sensor_pos,   # [1, 1, ns, 3]
+        d_volume_xyz,   # [1, nv, 1, 3] depends on depths values
+        d_H_1,          # [nt, nv]
+        t_start,        # float
+        delta_t,        # float
+        compensate_invsq=False,
+        is_laser_paired_to_sensor=False,
+        is_transient=False
+):
+    nt, nl, ns = d_H_0.shape
+    nv = d_volume_xyz.shape[1]
+    epsilon = 1e-4
+    
+    v = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    l = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    s = cuda.blockIdx.z * cuda.blockDim.z + cuda.threadIdx.z
+    
+    if v >= nv or l >= nl or s >= ns:
+        return
+
+    # d_1: laser origin to laser illuminated point
+    # d_2: laser illuminated point to projector_focus
+    # d_3: x_v (camera_focus) to sensor imaged point
+    # d_4: sensor imaged point to sensor origin
+    d1 = d_d_1[l, 0, 0]
+    d4 = d_d_4[0, 0, s]
+    d2 = d_d_2[l, v, s] if is_laser_paired_to_sensor else d_d_2[l, v, 0]
+    
+    # Optimized distance calculation
+    volume_pos = (d_volume_xyz[0, v, 0, 0], 
+                 d_volume_xyz[0, v, 0, 1], 
+                 d_volume_xyz[0, v, 0, 2])
+    sensor_pos = (d_sensor_pos[0, 0, s, 0],
+                 d_sensor_pos[0, 0, s, 1],
+                 d_sensor_pos[0, 0, s, 2])
+    
+    d3_sq = calculate_distance_squared(volume_pos, sensor_pos)
+    d3 = math.sqrt(d3_sq)
+
+    # Time index
+    total_dist = d1 + d2 + d3 + d4
+    idx = int((total_dist - t_start) / delta_t)
+    
+    # Compensation
+    invsq = 1.0
+    if compensate_invsq:
+        denominator = max(d1 * d2 * d3 * d4, epsilon)
+        invsq = 1.0 / denominator
+
+    t_range = nt if is_transient else 1
+    for t in range(t_range):
+        idx_t = idx + t
+        if 0 <= idx_t < nt:
+            val = d_H_0[idx_t, l, s] * invsq if compensate_invsq else d_H_0[idx_t, l, s]
+            cuda.atomic.add(d_H_1, v, val)
