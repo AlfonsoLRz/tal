@@ -56,15 +56,19 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
         assert projector_focus is None, \
             'projector_focus must not be set for this camera system'
         projector_focus = volume_xyz.reshape((1, nv, 1, 3))
-    projector_focus = projector_focus.astype(np.float32)
+    projector_focus = cp.asarray(projector_focus)
+    laser_grid_xyz = cp.asarray(laser_grid_xyz)
+    sensor_grid_xyz = cp.asarray(sensor_grid_xyz)
+    sensor_xyz = cp.asarray(sensor_xyz) if sensor_xyz is not None else None
+    volume_xyz = cp.asarray(volume_xyz)
 
     def distance(a, b):
-        return np.linalg.norm(b - a, axis=-1)
+        return cp.linalg.norm(b - a, axis=-1)
 
     if camera_system.is_transient():
-        H_1 = np.zeros((nt, *volume_xyz_shape), dtype=H_0.dtype)
+        H_1 = cp.zeros((nt, nv), dtype=H_0.dtype)
     else:
-        H_1 = np.zeros(volume_xyz_shape, dtype=H_0.dtype)
+        H_1 = cp.zeros((nv, ), dtype=H_0.dtype)
 
     # d_1: laser origin to laser illuminated point
     # d_2: laser illuminated point to projector_focus
@@ -74,24 +78,18 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
         d_1 = distance(laser_xyz, laser_grid_xyz)
         d_4 = distance(sensor_grid_xyz, sensor_xyz)
     else:
-        d_1 = np.zeros((nl, 1, 1))
-        d_4 = np.zeros((1, 1, ns))
+        d_1 = cp.zeros((nl, 1, 1))
+        d_4 = cp.zeros((1, 1, ns))
 
     if camera_system.bp_accounts_for_d_2():
         d_2 = distance(laser_grid_xyz, projector_focus)
     else:
-        d_2 = np.float32(0.0)
+        d_2 = cp.float32(0.0)
 
-    d_H_0 = cuda.to_device(H_0)
-    d_d_1 = cuda.to_device(d_1)
-    d_d_2 = cuda.to_device(d_2)
-    d_d_4 = cuda.to_device(d_4)
-    d_sensor_xyz = cuda.to_device(sensor_grid_xyz)
-    d_volume_xyz = cuda.to_device(volume_xyz)
-    if camera_system.is_transient():
-        d_H_1 = cuda.to_device(np.zeros((nt, nv), dtype=H_0.dtype))
-    else:
-        d_H_1 = cuda.to_device(np.zeros((nv,), dtype=H_0.dtype))
+    H_0 = cp.asarray(H_0)
+    d_1 = cp.asarray(d_1)
+    d_2 = cp.asarray(d_2)
+    d_4 = cp.asarray(d_4)
 
     threads_per_block = (16, 16, 4)
     blocks_per_grid = (
@@ -100,11 +98,11 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
         (ns + threads_per_block[2] - 1) // threads_per_block[2],
     )
     
-    backproject_numba[blocks_per_grid, threads_per_block](d_H_0, d_d_1, d_d_2, d_d_4, d_sensor_xyz, d_volume_xyz, d_H_1,
+    backproject_numba[blocks_per_grid, threads_per_block](H_0, d_1, d_2, d_4, sensor_grid_xyz, volume_xyz, H_1,
                                                             t_start, delta_t, compensate_invsq, is_laser_paired_to_sensor,
                                                             camera_system.is_transient(),)
 
-    H_1 = d_H_1.copy_to_host()
+    H_1 = H_1.get()
 
     if camera_system.is_transient():
         H_1 = H_1.reshape((nt, *volume_xyz_shape))

@@ -14,8 +14,9 @@ data.
 """
 
 from tal.io.capture_data import NLOSCaptureData
+import cupy as cp
 import numpy as np
-from scipy.interpolate import interpn
+from cupyx.scipy.interpolate import interpn
 
 
 def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
@@ -41,34 +42,37 @@ def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
         range = data.delta_t*M
 
         data = data.H
+        data = cp.asarray(data)
 
-        z,y,x = np.mgrid[-M:M, -N:N, -N:N]
+        z,y,x = cp.mgrid[-M:M, -N:N, -N:N]
         x = x/N
         y = y/N
         z = z/M
-        
-        grid_z = np.tile(np.linspace(0, 1, M)[:, np.newaxis, np.newaxis],
-                        (1, N, N))
-        aux_data = np.sqrt((data*grid_z)**2)
 
-        t_data = np.zeros((2*M, 2*N, 2*N))
+        grid_z = cp.tile(cp.linspace(0, 1, M, dtype=cp.float16)[:, cp.newaxis, cp.newaxis], (1, N, N))
+        aux_data = cp.sqrt((data*grid_z)**2)
+
+        t_data = cp.zeros((2*M, 2*N, 2*N))
         t_data[:M, :N, :N] = aux_data
         # FFT
-        f_data = np.fft.fftshift(np.fft.fftn(t_data))
+        f_data = cp.fft.fftshift(cp.fft.fftn(t_data))
 
         # Stolt trick
-        sqrt_term = np.sqrt((N*range/(M*width*4))**2 * (x**2 + y**2) + z**2)
-        f_vol = interpn((z[:,0,0],y[0,:,0],x[0,0,:]),
+        sqrt_term = cp.sqrt((N*range/(M*width*4))**2 * (x**2 + y**2) + z**2)
+        f_vol = cp.interpn((z[:,0,0],y[0,:,0],x[0,0,:]),
                         f_data, 
-                        np.moveaxis(np.array([sqrt_term, y, x]), 0,-1),
+                        cp.moveaxis(cp.array([sqrt_term, y, x]), 0,-1),
                         method = 'linear',
                         bounds_error = False,
                         fill_value=0)
         f_vol *= z>0
-        f_vol *= np.abs(z) / np.max(sqrt_term)
+        f_vol *= cp.abs(z) / cp.max(sqrt_term)
 
         # IFFT
-        t_vol = np.fft.ifftn(np.fft.ifftshift(f_vol))
-        t_vol = np.abs(t_vol)**2
+        t_vol = cp.fft.ifftn(cp.fft.ifftshift(f_vol))
+        t_vol = cp.abs(t_vol)**2
+
+        # Back to CPU
+        t_vol = t_vol.get()  # Convert back to numpy array
 
         return t_vol[:M, :N, :N]
