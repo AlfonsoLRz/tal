@@ -114,7 +114,7 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
 
 @cuda.jit(device=True)
 def calculate_distance_squared(a, b):
-    """Optimized distance squared calculation"""
+    """Squared distance between two 3D points."""
     return (a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2
 
 
@@ -133,6 +133,10 @@ def backproject_numba(
         is_laser_paired_to_sensor=False,
         is_transient=False
 ):
+    """
+    Backprojection kernel for NLOS reconstruction.
+    This kernel computes the backprojection of the input data H_0
+    to the volume defined by volume_xyz."""
     nt, nl, ns = d_H_0.shape
     nv = d_volume_xyz.shape[1]
     epsilon = 1e-4

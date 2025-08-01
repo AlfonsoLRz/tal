@@ -3,7 +3,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-data = tal.io.read_capture('C:/Datasets/transient/nlos/z/confocal-scene-64.hdf5')  # you'll need to generate this file using "tal render exhaustive-scene"
+data = tal.io.read_capture('C:/Datasets/transient/nlos/z/confocal-scene-256.hdf5')  # you'll need to generate this file using "tal render exhaustive-scene"
 tal.reconstruct.compensate_laser_cos_dsqr(data)
 
 #volume_xyz = tal.reconstruct.get_volume_project_rw(data, depths=[1.0,])
