@@ -46,7 +46,8 @@ def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
         range = data.delta_t*M
 
         # Convert to cupy array with float16 precision
-        data = cp.asarray(data.H, dtype=float_dtype)  # Convert to cupy array with float16 precision
+        data = cp.asarray(np.transpose(data.H, (1, 2, 0)), dtype=float_dtype)  # Convert to cupy array with float16 precision
+        print(data.shape)
 
         z, y, x = cp.mgrid[-M:M, -N:N, -N:N].astype(float_dtype)
         z, y, x = z / M, y / N, x / N  # Normalize to [-1, 1] range
@@ -77,3 +78,23 @@ def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
         t_vol = t_vol.get()  # Convert back to numpy array
 
         return t_vol[:M, :N, :N]
+
+@cuda.jit
+def backproject_numba(
+    d_H_0,                 # Starting data
+    d_H_1,                 # Output data        
+    shift
+):
+    resolution = d_H_0.shape
+    epsilon = 1e-8
+
+    t = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    x = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    y = cuda.blockIdx.z * cuda.blockDim.z + cuda.threadIdx.z
+    
+    if t >= resolution[0] or x >= resolution[1] or y >= resolution[2]:
+        return
+    
+    fx = 2.0 * float(x) / resolution[1] - 1.0
+    fy = 2.0 * float(y) / resolution[2] - 1.0
+    fz = 2.0 * float(t) / resolution[0] - 1.0
