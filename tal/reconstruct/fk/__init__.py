@@ -48,42 +48,32 @@ def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
         range = data.delta_t*M
 
         # Convert to cupy array with float16 precision
-        data = cp.asarray(np.transpose(data.H, (1, 2, 0)), dtype=float_dtype)  # Convert to cupy array with float16 precision
-        
-        # print(N, M, N * range / (M * width * 4))
-        #
+        data = cp.asarray(data.H, dtype=float_dtype)  # Convert to cupy array with float16 precision
 
         # FFT
-        t_data = cp.zeros((2*N, 2*N, 2*M), dtype=complex_dtype)  
-        t_data[:N, :N, :M] = data
+        print(M, N, N)
+        t_data = cp.zeros((2*M, 2*N, 2*N), dtype=complex_dtype)  
+        t_data[:M, :N, :N] = data.astype(complex_dtype)
         t_data = cp.fft.fftshift(cp.fft.fftn(t_data))
 
         # Stolt trick
-        threads_per_block = (8, 8, 8)
+        threads_per_block = (16, 8, 8)
         blocks_per_grid = (
-            (N + threads_per_block[0] - 1) // threads_per_block[0],
-            (N + threads_per_block[1] - 1) // threads_per_block[1],
-            (M + threads_per_block[2] - 1) // threads_per_block[2],
+            (M + threads_per_block[0] - 1) // threads_per_block[0],
+            (2 * N + threads_per_block[1] - 1) // threads_per_block[1],
+            (2 * N + threads_per_block[2] - 1) // threads_per_block[2],
         )
 
-        print(N, N, M)
-        out_data = cp.zeros((N, N, M), dtype=complex_dtype)
-        fk_numba[blocks_per_grid, threads_per_block](t_data, out_data, N * range / (M * width * 4))
-
-        # # Stolt trick
-        # f_vol = interpn((z[:,0,0], y[0,:,0], x[0,0,:]),
-        #                 f_data, 
-        #                 cp.moveaxis(cp.array([sqrt_term, y, x], dtype=float_dtype), 0,-1),
-        #                 method = 'linear',
-        #                 bounds_error = False,
-        #                 fill_value=0)
-        # f_vol *= z>0
-        # f_vol *= cp.abs(z) / (sqrt_term + epsilon)
+        stolt_const = N * range / (M * width * 4)
+        stolt_const_sq = stolt_const * stolt_const
+        
+        out_data = cp.zeros((2 * M, 2 * N, 2 * N), dtype=complex_dtype)
+        fk_numba[blocks_per_grid, threads_per_block](t_data, out_data, stolt_const_sq, 2 * N, 2 * N, 2 * M, 1e-8)
 
         # IFFT
         t_vol = cp.real(cp.fft.ifftn(cp.fft.ifftshift(out_data))).astype(float_dtype)
         t_vol = t_vol**2
-        t_vol = t_vol.get()  # Convert back to numpy array
+        t_vol = t_vol.get()  
 
         return t_vol[:M, :N, :N]
 
@@ -91,27 +81,26 @@ def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
 def fk_numba(
     d_H_0,                 # Starting data
     d_H_1,                 # Output data        
-    stolt_const
+    stolt_const,
+    X, Y, Z,
+    epsilon
 ):
-    resolution = d_H_0.shape
-    epsilon = 1e-8
-
-    x = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    z = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x + Z // 2
     y = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
-    z = cuda.blockIdx.z * cuda.blockDim.z + cuda.threadIdx.z
-    
-    if z >= resolution[2] or x >= resolution[0] or y >= resolution[1]:
+    x = cuda.blockIdx.z * cuda.blockDim.z + cuda.threadIdx.z
+
+    if z >= Z or y >= Y or x >= X:
         return
     
-    fx = 2.0 * float(x) / float(resolution[0]) - 1.0
-    fy = 2.0 * float(y) / float(resolution[1]) - 1.0
-    fz = 2.0 * float(z) / float(resolution[2]) - 1.0
+    fx = 2.0 * float(x) / float(X) - 1.0
+    fy = 2.0 * float(y) / float(Y) - 1.0
+    fz = 2.0 * float(z) / float(Z) - 1.0
 
     sqrt_term = math.sqrt(stolt_const * (fx*fx + fy*fy) + fz*fz)
 
-    ix = (fx + 1.0) * 0.5 * resolution[0]
-    iy = (fy + 1.0) * 0.5 * resolution[1]
-    iz = (sqrt_term + 1.0) * 0.5 * resolution[2]
+    ix = (fx + 1.0) * 0.5 * X
+    iy = (fy + 1.0) * 0.5 * Y
+    iz = (sqrt_term + 1.0) * 0.5 * Z
 
     x0 = int(math.floor(ix))
     y0 = int(math.floor(iy))
@@ -119,21 +108,22 @@ def fk_numba(
     x1, y1, z1 = x0 + 1, y0 + 1, z0 + 1
     dx, dy, dz = ix - x0, iy - y0, iz - z0
 
-    x0 = max(0, min(x0, resolution[0] - 1))
-    y0 = max(0, min(y0, resolution[1] - 1))
-    z0 = max(0, min(z0, resolution[2] - 1))
-    x1 = max(0, min(x1, resolution[0] - 1))
-    y1 = max(0, min(y1, resolution[1] - 1))
-    z1 = max(0, min(z1, resolution[2] - 1))
+    x0 = max(0, min(x0, X - 1))
+    y0 = max(0, min(y0, Y - 1))
+    z0 = max(0, min(z0, Z - 1))
+    x1 = max(0, min(x1, X - 1))
+    y1 = max(0, min(y1, Y - 1))
+    z1 = max(0, min(z1, Z - 1))
 
-    c000 = d_H_0[x0, y0, z0]
-    c001 = d_H_0[x1, y0, z0]
-    c010 = d_H_0[x0, y1, z0]
-    c011 = d_H_0[x1, y1, z0]
-    c100 = d_H_0[x0, y0, z1]
-    c101 = d_H_0[x1, y0, z1]
-    c110 = d_H_0[x0, y1, z1]
-    c111 = d_H_0[x1, y1, z1]
+    c000 = d_H_0[z0, y0, x0]
+    c001 = d_H_0[z0, y0, x1]
+    c010 = d_H_0[z0, y1, x0]
+    c011 = d_H_0[z0, y1, x1]
+    c100 = d_H_0[z1, y0, x0]
+    c101 = d_H_0[z1, y0, x1]
+    c110 = d_H_0[z1, y1, x0]
+    c111 = d_H_0[z1, y1, x1]
+
     c00 = c000 * (1 - dx) + c001 * dx
     c01 = c010 * (1 - dx) + c011 * dx
     c10 = c100 * (1 - dx) + c101 * dx
@@ -141,6 +131,6 @@ def fk_numba(
     c0 = c00 * (1 - dy) + c01 * dy
     c1 = c10 * (1 - dy) + c11 * dy
     c = c0 * (1 - dz) + c1 * dz
-    d = math.fabs(fz) / (sqrt_term + epsilon)
 
-    d_H_1[x, y, z] = 1.0
+    d = math.fabs(fz) / (sqrt_term + epsilon)
+    d_H_1[z, y, x] = c * d
