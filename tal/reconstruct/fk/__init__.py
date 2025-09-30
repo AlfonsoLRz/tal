@@ -51,10 +51,9 @@ def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
         data = cp.asarray(data.H, dtype=float_dtype)  # Convert to cupy array with float16 precision
 
         # FFT
-        print(M, N, N)
         t_data = cp.zeros((2*M, 2*N, 2*N), dtype=complex_dtype)  
         t_data[:M, :N, :N] = data.astype(complex_dtype)
-        t_data = cp.fft.fftshift(cp.fft.fftn(t_data))
+        t_data = cp.fft.fftn(t_data)
 
         # Stolt trick
         threads_per_block = (16, 8, 8)
@@ -68,14 +67,18 @@ def solve(data: NLOSCaptureData) -> NLOSCaptureData.SingleReconstructionType:
         stolt_const_sq = stolt_const * stolt_const
         
         out_data = cp.zeros((2 * M, 2 * N, 2 * N), dtype=complex_dtype)
-        fk_numba[blocks_per_grid, threads_per_block](t_data, out_data, stolt_const_sq, 2 * N, 2 * N, 2 * M, 1e-8)
+        fk_numba[blocks_per_grid, threads_per_block](
+            t_data, out_data, stolt_const_sq, 
+            2 * N, 2 * N, 2 * M, 
+            N // 2, N // 2, M // 2,
+            1e-8)
 
         # IFFT
-        t_vol = cp.real(cp.fft.ifftn(cp.fft.ifftshift(out_data))).astype(float_dtype)
-        t_vol = t_vol**2
-        t_vol = t_vol.get()  
+        out_data = cp.real(cp.fft.ifftn(out_data)).astype(float_dtype)
+        out_data = out_data**2
+        out_data = out_data.get()
 
-        return t_vol[:M, :N, :N]
+        return out_data[:M, :N, :N]
 
 @cuda.jit
 def fk_numba(
@@ -83,9 +86,10 @@ def fk_numba(
     d_H_1,                 # Output data        
     stolt_const,
     X, Y, Z,
+    shift_X, shift_Y, shift_Z,
     epsilon
 ):
-    z = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x + Z // 2
+    z = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x + shift_Z
     y = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
     x = cuda.blockIdx.z * cuda.blockDim.z + cuda.threadIdx.z
 
@@ -101,6 +105,10 @@ def fk_numba(
     ix = (fx + 1.0) * 0.5 * X
     iy = (fy + 1.0) * 0.5 * Y
     iz = (sqrt_term + 1.0) * 0.5 * Z
+
+    ix = (ix + shift_X) % X
+    iy = (iy + shift_Y) % Y
+    iz = (iz + shift_Z) % Z
 
     x0 = int(math.floor(ix))
     y0 = int(math.floor(iy))
@@ -133,4 +141,9 @@ def fk_numba(
     c = c0 * (1 - dz) + c1 * dz
 
     d = math.fabs(fz) / (sqrt_term + epsilon)
+
+    x = (x + shift_X) % X
+    y = (y + shift_Y) % Y
+    z = (z + shift_Z) % Z
+
     d_H_1[z, y, x] = c * d
