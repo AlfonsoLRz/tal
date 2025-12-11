@@ -11,6 +11,9 @@ approaches.
 WARNING: the fk-migration demands a lot of memory usage. If you think you might
 get memory errors, try downscaling the y-tal data or trim the latest temporal
 data.
+
+@author: Pablo Luesia-Lahoz, adapted from "Wave-Based Non-Line-of-Sight Imaging using Fast f-k Migration".
+         Migrated to GPU by Alfonso López-Ruiz.
 """
 
 from tal.io.capture_data import NLOSCaptureData
@@ -18,10 +21,7 @@ import cupy as cp
 import numpy as np
 
 
-# --------------------------------------------------------------------------
 # CUDA kernel (compiled once)
-# --------------------------------------------------------------------------
-
 
 fk_kernel_source = r"""
 #include <cupy/complex.cuh>
@@ -145,16 +145,12 @@ fk_kernel = cp.RawKernel(
     "stoltKernel",
     options=(
         "--use_fast_math",
-        "-arch=compute_89",  # adjust if needed
+        "-arch=compute_89", 
     ),
 )
 
 
-# --------------------------------------------------------------------------
 # Python-side pipeline
-# --------------------------------------------------------------------------
-
-
 def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleReconstructionType:
     """
     Reconstruction using fk-migration (confocal only).
@@ -168,7 +164,7 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
         if downscale is not None and downscale > 1:
             data.spatial_downscale(downscale)
 
-        # Types
+        # Types, tho this is not maintained yet because of CUDA kernel
         float_dtype, complex_dtype = cp.float32, cp.complex64
 
         # Dimensions
@@ -177,7 +173,7 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
         width = float_dtype(data.sensor_grid_xyz[-1, -1, 0])
         time_range = float_dtype(data.delta_t * M)
 
-        # Move transient to GPU directly as complex64 (real part used, imag=0)
+        # Move transient to GPU directly as complex64 (only real part is different than zero)
         h_gpu = cp.asarray(data.H, dtype=complex_dtype)
 
         t_data = cp.zeros((2 * M, 2 * N, 2 * N), dtype=complex_dtype)
@@ -190,7 +186,7 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
         stolt_const = N * time_range / (M * width * 4.0)
         stolt_const_sq = float_dtype(stolt_const * stolt_const)
 
-        # Output spectrum after Stolt interpolation
+        # Output of Stolt interpolation
         out_data = cp.zeros_like(t_data)
 
         # Shapes and inverse resolutions
@@ -209,22 +205,19 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
             blocks,
             threads,
             (
-                t_data,                # H (input FFT volume)
-                out_data,              # result (Stolt-warped spectrum)
+                t_data,                
+                out_data,              
                 np.int32(X), np.int32(Y), np.int32(Z),
-                invX, invY, invZ,
-                shiftX, shiftY, shiftZ,
+                invX, invY, invZ,               # For saving computations
+                shiftX, shiftY, shiftZ,         # For avoiding computing stolt on the whole grid
                 np.float32(stolt_const_sq),
             ),
         )
-        # Optional during debugging:
         # cp.cuda.runtime.deviceSynchronize()
 
         # Inverse FFT back to time/space domain
         out_data = cp.fft.ifftn(out_data)
         out_data = cp.real(out_data).astype(float_dtype)
-
-        # Intensity
         out_data = out_data ** 2
         out_data = out_data.get()
 
