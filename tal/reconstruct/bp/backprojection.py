@@ -22,25 +22,33 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     nt, nl, ns = H_0.shape
     nv, _ = volume_xyz.shape
 
+    print(volume_xyz.shape)
+    print(nt, nl, ns, nv)
+
     if is_laser_paired_to_sensor:
         assert laser_grid_xyz.shape[0] == ns, 'H does not match with laser_grid_xyz'
     else:
         assert laser_grid_xyz.shape[0] == nl, 'H does not match with laser_grid_xyz'
+
     assert sensor_grid_xyz.shape[0] == ns, 'H does not match with sensor_grid_xyz'
     assert (not t_accounts_first_and_last_bounces or (laser_xyz is not None and sensor_xyz is not None)), \
         't_accounts_first_and_last_bounces requires laser_xyz and sensor_xyz'
 
+    print(laser_xyz.shape, sensor_xyz.shape)
+    print(laser_grid_xyz.shape, sensor_grid_xyz.shape)
+    
     # reshape everything into (nl, nv, ns, 3)
     if laser_xyz is not None:
         laser_xyz = laser_xyz.reshape((1, 1, 1, 3)).astype(np.float32)
+
     if sensor_xyz is not None:
         sensor_xyz = sensor_xyz.reshape((1, 1, 1, 3)).astype(np.float32)
+
     if is_laser_paired_to_sensor:
-        laser_grid_xyz = laser_grid_xyz.reshape(
-            (1, 1, ns, 3)).astype(np.float32)
+        laser_grid_xyz = laser_grid_xyz.reshape((1, 1, ns, 3)).astype(np.float32)
     else:
-        laser_grid_xyz = laser_grid_xyz.reshape(
-            (nl, 1, 1, 3)).astype(np.float32)
+        laser_grid_xyz = laser_grid_xyz.reshape((nl, 1, 1, 3)).astype(np.float32)
+
     sensor_grid_xyz = sensor_grid_xyz.reshape((1, 1, ns, 3)).astype(np.float32)
     volume_xyz = volume_xyz.reshape((1, nv, 1, 3)).astype(np.float32)
 
@@ -50,12 +58,12 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
             'When using tal.reconstruct.bp, projector_focus must be a single 3D point. ' \
             'If you want to focus the illumination aperture at multiple points, ' \
             'please use tal.reconstruct.pf_dev instead or call tal.reconstruct.bp once per projector_focus.'
-        projector_focus = np.array(projector_focus).reshape(
-            (1, 1, 1, 3)).repeat(nv, axis=1)
+        projector_focus = np.array(projector_focus).reshape((1, 1, 1, 3)).repeat(nv, axis=1)
     else:
         assert projector_focus is None, \
             'projector_focus must not be set for this camera system'
         projector_focus = volume_xyz.reshape((1, nv, 1, 3))
+
     projector_focus = cp.asarray(projector_focus)
     laser_grid_xyz = cp.asarray(laser_grid_xyz)
     sensor_grid_xyz = cp.asarray(sensor_grid_xyz)
@@ -70,6 +78,9 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     else:
         H_1 = cp.zeros((nv, ), dtype=H_0.dtype)
 
+    print(t_accounts_first_and_last_bounces)
+    print(laser_xyz.shape, laser_grid_xyz.shape, sensor_grid_xyz.shape, sensor_xyz.shape, projector_focus.shape)
+
     # d_1: laser origin to laser illuminated point
     # d_2: laser illuminated point to projector_focus
     # d_3: x_v (camera_focus) to sensor imaged point
@@ -80,6 +91,8 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     else:
         d_1 = cp.zeros((nl, 1, 1))
         d_4 = cp.zeros((1, 1, ns))
+
+    print(d_1.shape, d_4.shape)
 
     if camera_system.bp_accounts_for_d_2():
         d_2 = distance(laser_grid_xyz, projector_focus)

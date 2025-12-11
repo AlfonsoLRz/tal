@@ -62,8 +62,7 @@ def solve(data: NLOSCaptureData,
     """
     from tal.reconstruct import filter_H
     old_H = data.H
-    data.H = filter_H(data, filter_name='pf', border=border,
-                      wl_mean=wl_mean, wl_sigma=wl_sigma)
+    data.H = filter_H(data, filter_name='pf', border=border, wl_mean=wl_mean, wl_sigma=wl_sigma)
 
     from tal.reconstruct.bp import solve as bp_solve
     H_1 = bp_solve(data,

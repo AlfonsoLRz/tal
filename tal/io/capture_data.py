@@ -285,7 +285,7 @@ class NLOSCaptureData:
         dict_keys = self.__get_dict_keys()
         return dict((key, getattr(self, key)) for key in dict_keys)
 
-    def downscale(self, downscale: int):
+    def spatial_downscale(self, downscale: int):
         """
         Updates the data in this object to reduce the number of laser and sensor positions by the given factor
 
@@ -307,6 +307,23 @@ class NLOSCaptureData:
 
         log(LogLevel.INFO,
             f'Downscaled from {nsx}x{nsy} to {nsx // downscale}x{nsy // downscale}')
+        
+    def temporal_downscale(self, downscale: int):
+        """
+        Updates the data in this object to reduce the number of temporal bins by the given factor
+
+        e.g. Consider data with H_format = (T, Sx, Sy) and H.shape = (4096, 256, 256).
+             Calling with downscale = 2 will reduce H.shape to (2048, 256, 256).
+        """
+        assert downscale > 1, 'downscale must be > 1'
+
+        nt, *rest = self.H.shape
+        self.H = self.H.reshape(
+            (nt // downscale, downscale, *rest)).sum(axis=1)
+        self.delta_t *= downscale
+
+        log(LogLevel.INFO,
+            f'Temporally downscaled from {nt} to {nt // downscale}')
 
     def get_single_subdata_from_laser_point(self, *args):
         """
