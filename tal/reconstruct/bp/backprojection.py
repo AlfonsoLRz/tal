@@ -7,11 +7,9 @@ from tal.log import log, LogLevel, TQDMLogRedirect
 import cupy as cp
 from numba import cuda
 import numpy as np
-import math
-from tqdm import tqdm
 
 
-# CUDA kernel (compiled once)
+# CUDA kernel (will be compiled once)
 
 bp_kernel_source = r"""
 extern "C" __global__
@@ -43,7 +41,6 @@ void backproject_kernel(
     if (v >= nv || l >= nl || s >= ns)
         return;
 
-    // ----- positions -----
     float vx = volume_xyz[3*v + 0];
     float vy = volume_xyz[3*v + 1];
     float vz = volume_xyz[3*v + 2];
@@ -61,9 +58,9 @@ void backproject_kernel(
     float py = projector_focus[3*v + 1];
     float pz = projector_focus[3*v + 2];
 
-    // ----- distances -----
     float d1 = 0.0f;
-    if (t_accounts_first_and_last_bounces) {
+    if (t_accounts_first_and_last_bounces && laser_xyz != nullptr)
+    {
         float dx1 = lx - laser_xyz[0];
         float dy1 = ly - laser_xyz[1];
         float dz1 = lz - laser_xyz[2];
@@ -71,7 +68,8 @@ void backproject_kernel(
     }
 
     float d2 = 0.0f;
-    if (bp_accounts_for_d_2) {
+    if (bp_accounts_for_d_2) 
+    {
         float dx2 = px - lx;
         float dy2 = py - ly;
         float dz2 = pz - lz;
@@ -84,7 +82,8 @@ void backproject_kernel(
     float d3 = sqrtf(dx3*dx3 + dy3*dy3 + dz3*dz3);
 
     float d4 = 0.0f;
-    if (t_accounts_first_and_last_bounces) {
+    if (t_accounts_first_and_last_bounces && sensor_xyz != nullptr)
+    {
         float dx4 = sensor_xyz[0] - sx;
         float dy4 = sensor_xyz[1] - sy;
         float dz4 = sensor_xyz[2] - sz;
@@ -96,27 +95,27 @@ void backproject_kernel(
     int idx = (int)((total_dist - t_start) / delta_t);
 
     float invsq = 1.0f;
-    if (compensate_invsq) {
+    if (compensate_invsq) 
+    {
         float denom = d1 * d2 * d3 * d4 + 1e-5f;
         invsq = 1.0f / denom;
     }
 
-    // (Optional debug; you can keep while testing)
-    if (v == 0 && l == 0 && s == 0) {
-        printf("DBG: d1=%f d2=%f d3=%f d4=%f total=%f idx=%d nt=%d t_start=%f delta_t=%f\n",
-                d1, d2, d3, d4, total_dist, idx, nt, t_start, delta_t);
-    }
-
-    if (is_transient) {
-        for (int t = 0; t < nt; ++t) {
+    if (is_transient) 
+    {
+        for (int t = 0; t < nt; ++t) 
+        {
             int idx_t = idx + t;
             if (0 <= idx_t && idx_t < nt) {
                 float val = H0[(idx_t * nl + l) * ns + s] * invsq;
                 atomicAdd(&H1[t * nv + v], val);
             }
         }
-    } else {
-        if (0 <= idx && idx < nt) {
+    } 
+    else 
+    {
+        if (0 <= idx && idx < nt) 
+        {
             float val = H0[(idx * nl + l) * ns + s] * invsq;
             atomicAdd(&H1[v], val);
         }
@@ -150,6 +149,9 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     nt, nl, ns = H_0.shape
     nv, _ = volume_xyz.shape
 
+    print(H_0.shape, volume_xyz.shape)
+    print(nt, nl, ns, nv)
+
     if is_laser_paired_to_sensor:
         assert laser_grid_xyz.shape[0] == ns, 'H does not match with laser_grid_xyz'
     else:
@@ -159,7 +161,7 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     assert (not t_accounts_first_and_last_bounces or (laser_xyz is not None and sensor_xyz is not None)), \
         't_accounts_first_and_last_bounces requires laser_xyz and sensor_xyz'
 
-    # ---- projector_focus handling (same semantics as original) ----
+    # Same as in the original code
     if camera_system.implements_projector():
         assert projector_focus is not None, 'projector_focus is required for this camera system'
         assert np.size(projector_focus) == 3, (
@@ -168,48 +170,19 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
             'please use tal.reconstruct.pf_dev instead or call tal.reconstruct.bp once per projector_focus.'
         )
         pf = np.asarray(projector_focus, dtype=np.float32).reshape(1, 3)
-        projector_focus_arr = np.repeat(pf, nv, axis=0)  # [nv,3]
+        projector_focus_arr = np.repeat(pf, nv, axis=0)  # [nv, 3]
     else:
         assert projector_focus is None, 'projector_focus must not be set for this camera system'
-        projector_focus_arr = np.asarray(volume_xyz, dtype=np.float32)  # [nv,3]
+        projector_focus_arr = np.asarray(volume_xyz, dtype=np.float32)  # [nv, 3]
 
-    # pick one sample
-    v = l = s = 0
-
-    lx, ly, lz = laser_grid_xyz[0]
-    sx, sy, sz = sensor_grid_xyz[0]
-    vx, vy, vz = volume_xyz[0]
-
-    laser_xyz_np = np.asarray(laser_xyz).reshape(3,)
-    sensor_xyz_np = np.asarray(sensor_xyz).reshape(3,)
-
-    d1 = np.linalg.norm([lx - laser_xyz_np[0],
-                        ly - laser_xyz_np[1],
-                        lz - laser_xyz_np[2]]) if t_accounts_first_and_last_bounces else 0.0
-    if camera_system.bp_accounts_for_d_2():
-        px, py, pz = projector_focus_arr[0]
-        d2 = np.linalg.norm([px - lx, py - ly, pz - lz])
-    else:
-        d2 = 0.0
-    d3 = np.linalg.norm([sx - vx, sy - vy, sz - vz])
-    d4 = np.linalg.norm([sensor_xyz_np[0] - sx,
-                        sensor_xyz_np[1] - sy,
-                        sensor_xyz_np[2] - sz]) if t_accounts_first_and_last_bounces else 0.0
-
-    total = d1 + d2 + d3 + d4
-    idx_cpu = int((total - t_start) / delta_t)
-    print("CPU total_dist:", total, "idx:", idx_cpu)
-    print("CPU d1:", d1, "d2:", d2, "d3:", d3, "d4:", d4)
-    print(delta_t, t_start)
-
-    # ---- move everything to GPU ----
+    # Transferring everything to GPU
     H_0_gpu = cp.asarray(H_0, dtype=cp.float32)
-    laser_grid_gpu = cp.asarray(laser_grid_xyz, dtype=cp.float32)      # [nl,3] or [ns,3]
-    sensor_grid_gpu = cp.asarray(sensor_grid_xyz, dtype=cp.float32)    # [ns,3]
-    volume_gpu = cp.asarray(volume_xyz, dtype=cp.float32)              # [nv,3]
-    projector_focus_gpu = cp.asarray(projector_focus_arr, dtype=cp.float32)  # [nv,3]
+    laser_grid_gpu = cp.asarray(laser_grid_xyz, dtype=cp.float32)               # [nl,3] or [ns,3]
+    sensor_grid_gpu = cp.asarray(sensor_grid_xyz, dtype=cp.float32)             # [ns,3]
+    volume_gpu = cp.asarray(volume_xyz, dtype=cp.float32)                       # [nv,3]
+    projector_focus_gpu = cp.asarray(projector_focus_arr, dtype=cp.float32)     # [nv,3]
 
-    # ensure we always have valid 3-float arrays
+    # If null, set to zero 
     if laser_xyz is None:
         laser_xyz_arr = np.zeros(3, dtype=np.float32)
     else:
@@ -230,13 +203,14 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
 
     threads = (8, 8, 8)
     blocks = (
-        (nv + threads[0] - 1)//threads[0],
-        (nl + threads[1] - 1)//threads[1],
-        (ns + threads[2] - 1)//threads[2],
+        (nv + threads[0] - 1) // threads[0],
+        (nl + threads[1] - 1) // threads[1],
+        (ns + threads[2] - 1) // threads[2],
     )
 
-    ct = cp.float32(delta_t)
-    ts = cp.float32(t_start)
+    # Somehow, simply passing float32 causes issues; explicitly convert to cupy data types
+    cp_delta = cp.float32(delta_t)
+    cp_t_start = cp.float32(t_start)
 
     bp_kernel(
         blocks,
@@ -251,7 +225,7 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
             sensor_xyz_gpu,
             projector_focus_gpu,
             nt, nl, ns, nv,
-            ts, ct,
+            cp_t_start, cp_delta,
             int(t_accounts_first_and_last_bounces),
             int(camera_system.bp_accounts_for_d_2()),
             int(compensate_invsq),
@@ -259,7 +233,7 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
             int(camera_system.is_transient()),
         ),
     )
-    cp.cuda.runtime.deviceSynchronize()
+    #cp.cuda.runtime.deviceSynchronize()
 
     H_1 = H_1_gpu.get()
     if camera_system.is_transient():
