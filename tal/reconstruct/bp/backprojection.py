@@ -9,7 +9,7 @@ from numba import cuda
 import numpy as np
 
 
-# CUDA kernel (will be compiled once)
+# CUDA kernel as in the C++ code; hope this will be easy to maintain both C++ and Python versions in the future
 
 bp_kernel_source = r"""
 extern "C" __global__
@@ -123,14 +123,13 @@ void backproject_kernel(
 }
 """
 
-
-# Compile once                              
+# Compile only once                             
 bp_kernel = cp.RawKernel(
     bp_kernel_source,
     "backproject_kernel",
     options=(
         "--use_fast_math",
-        "-arch=compute_89",
+#        "-arch=compute_89",
     ),
 )
 
@@ -140,7 +139,6 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
                 projector_focus=None,
                 laser_xyz=None, sensor_xyz=None,
                 compensate_invsq=False, progress=False):
-
     if camera_system.is_transient():
         log(LogLevel.WARNING, 'tal.reconstruct.bp: You have specified a time-resolved camera_system. '
             'The tal.reconstruct.bp implementation is better suited for time-gated systems. '
@@ -175,14 +173,14 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
         assert projector_focus is None, 'projector_focus must not be set for this camera system'
         projector_focus_arr = np.asarray(volume_xyz, dtype=np.float32)  # [nv, 3]
 
-    # Transferring everything to GPU
+    # Transfer everything to GPU
     H_0_gpu = cp.asarray(H_0, dtype=cp.float32)
     laser_grid_gpu = cp.asarray(laser_grid_xyz, dtype=cp.float32)               # [nl,3] or [ns,3]
     sensor_grid_gpu = cp.asarray(sensor_grid_xyz, dtype=cp.float32)             # [ns,3]
     volume_gpu = cp.asarray(volume_xyz, dtype=cp.float32)                       # [nv,3]
     projector_focus_gpu = cp.asarray(projector_focus_arr, dtype=cp.float32)     # [nv,3]
 
-    # If null, set to zero 
+    # If null, set to zero; TODO: check if it is possible to pass a null pointer to the CUDA kernel instead and avoid this step
     if laser_xyz is None:
         laser_xyz_arr = np.zeros(3, dtype=np.float32)
     else:

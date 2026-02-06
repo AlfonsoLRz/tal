@@ -12,8 +12,7 @@ WARNING: the fk-migration demands a lot of memory usage. If you think you might
 get memory errors, try downscaling the y-tal data or trim the latest temporal
 data.
 
-@author: Pablo Luesia-Lahoz, adapted from "Wave-Based Non-Line-of-Sight Imaging using Fast f-k Migration".
-         Migrated to GPU by Alfonso López-Ruiz.
+@author: Pablo Luesia-Lahoz, adapted from "Wave-Based Non-Line-of-Sight Imaging using Fast f-k Migration". Migrated to GPU by Alfonso López-Ruiz.
 """
 
 from tal.io.capture_data import NLOSCaptureData
@@ -145,7 +144,7 @@ fk_kernel = cp.RawKernel(
     "stoltKernel",
     options=(
         "--use_fast_math",
-        "-arch=compute_89", 
+#        "-arch=compute_89", 
     ),
 )
 
@@ -220,5 +219,6 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
         out_data = cp.real(out_data).astype(float_dtype)
         out_data = out_data ** 2
         out_data = out_data.get()
+        out_data = np.transpose(out_data, (1, 2, 0))  # swap x/y to match original orientation
 
-        return out_data[:M, :N, :N]
+        return out_data[:N, :N, :M]

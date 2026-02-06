@@ -3,24 +3,27 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
+#data = tal.io.read_capture(
+#    'C:/Datasets/transient/nlos/bunny/exhaustive-scene-32.hdf5'
+#)  
 data = tal.io.read_capture(
-    'C:/Datasets/transient/nlos/z/confocal-scene-64.hdf5'
+    'C:/Datasets/transient/nlos/z/confocal-scene-256.hdf5'
 )  
 tal.reconstruct.compensate_laser_cos_dsqr(data)
 
-volume_xyz = tal.reconstruct.get_volume_project_rw(data, depths=[1.0, 1.2, 1.4, 1.6, 1.8])
-print(volume_xyz.shape)
+depths = np.linspace(0.5, 2.0, 30)
+volume_xyz = tal.reconstruct.get_volume_project_rw(data, depths=depths)
 
 # ------------------------------------------
 start_time = time.time()
 
 # ------ Backprojection -------------
-with tal.resources(cpu_processes='max', downscale=1):
-    H_1 = tal.reconstruct.bp.solve(data, volume_xyz=volume_xyz, camera_system=tal.enums.CameraSystem.DIRECT_LIGHT)
+#with tal.resources(cpu_processes='max', downscale=1):
+#    H_1 = tal.reconstruct.bp.solve(data, volume_xyz=volume_xyz, camera_system=tal.enums.CameraSystem.DIRECT_LIGHT)
 
 # ------ Filtered backprojection -------------
-# with tal.resources(cpu_processes='max', downscale=1):
-#     H_1 = tal.reconstruct.fbp.solve(data, volume_xyz=volume_xyz, camera_system=tal.enums.CameraSystem.DIRECT_LIGHT, wl_mean=0.25, wl_sigma=0)
+with tal.resources(cpu_processes='max', downscale=1):
+    H_1 = tal.reconstruct.fbp.solve(data, volume_xyz=volume_xyz, camera_system=tal.enums.CameraSystem.DIRECT_LIGHT, wl_mean=0.25, wl_sigma=0.25 / np.sqrt(2))
 
 #H_1 = tal.reconstruct.fk.solve(data, downscale=1,)
 
