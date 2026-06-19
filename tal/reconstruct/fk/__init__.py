@@ -41,12 +41,10 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
     """
     Reconstruction using fk-migration (confocal only).
     """
-    assert data.is_confocal(), \
-        "Data must be confocal to use fk-migration with y-tal"
+    assert data.is_confocal(), "Data must be confocal to use fk-migration with y-tal"
 
     # TODO: implement non-confocal variant
     if data.is_confocal():
-        from tal.config import get_resources
         if downscale is not None and downscale > 1:
             data.spatial_downscale(downscale)
 
@@ -54,37 +52,49 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
         float_dtype, complex_dtype = cp.float32, cp.complex64
 
         # Dimensions
-        N = data.sensor_grid_xyz.shape[0]   # spatial (x/y)
-        M = data.H.shape[0]                 # temporal
-        width = float_dtype(data.sensor_grid_xyz[-1, -1, 0])
-        time_range = float_dtype(data.delta_t * M)
+        nt, sx, sy = data.H.shape
+        assert data.sensor_grid_xyz.shape[:2] == (sx, sy), \
+            'H does not match with sensor_grid_xyz'
+        grid_x = data.sensor_grid_xyz[..., 0]
+        grid_y = data.sensor_grid_xyz[..., 1]
+        half_x = np.float32((np.max(grid_x) - np.min(grid_x)) * 0.5)
+        half_y = np.float32((np.max(grid_y) - np.min(grid_y)) * 0.5)
+        assert half_x > 0.0 and half_y > 0.0, \
+            'Could not infer relay wall size for fk-migration'
+        time_range = np.float32(data.delta_t * nt)
 
-        # Move transient to GPU directly as complex64 (only real part is different than zero)
-        h_gpu = cp.asarray(data.H, dtype=complex_dtype)
+        # Match FasterNLOS' FK padding: later time bins get a linear ramp.
+        h_gpu = cp.asarray(data.H, dtype=float_dtype)
+        temporal_scale = cp.arange(nt, dtype=float_dtype).reshape(nt, 1, 1)
+        temporal_scale /= np.float32(nt)
 
-        t_data = cp.zeros((2 * M, 2 * N, 2 * N), dtype=complex_dtype)
-        t_data[:M, :N, :N] = h_gpu
+        t_data = cp.zeros((2 * nt, 2 * sx, 2 * sy), dtype=complex_dtype)
+        t_data[:nt, :sx, :sy] = h_gpu * temporal_scale
 
         # Forward 3D FFT (in-place)
         t_data = cp.fft.fftn(t_data)
 
         # Stolt parameters
-        stolt_const = N * time_range / (M * width * 4.0)
-        stolt_const_sq = float_dtype(stolt_const * stolt_const)
+        # t_data is laid out as (t, x, y), but the CUDA kernel's X axis
+        # corresponds to the physical y dimension and Y to physical x.
+        stolt_const_kernel_x = sy * time_range / (nt * half_y * 4.0)
+        stolt_const_kernel_y = sx * time_range / (nt * half_x * 4.0)
+        stolt_const_x_sq = np.float32(stolt_const_kernel_x * stolt_const_kernel_x)
+        stolt_const_y_sq = np.float32(stolt_const_kernel_y * stolt_const_kernel_y)
 
         # Output of Stolt interpolation
         out_data = cp.zeros_like(t_data)
 
         # Shapes and inverse resolutions
-        Z, Y, X = t_data.shape  # Z = 2*M, Y = 2*N, X = 2*N
+        Z, Y, X = t_data.shape  # Z = 2*nt, Y = 2*sx, X = 2*sy
         invX, invY, invZ = np.float32(1.0 / float(X)), np.float32(1.0 / float(Y)), np.float32(1.0 / float(Z))
         shiftX, shiftY, shiftZ = np.int32(X // 2), np.int32(Y // 2), np.int32(Z // 2)
 
         threads = (8, 8, 8)
         blocks = (
-            (X + threads[0] - 1) // threads[0],
+            (Z // 2 + threads[0] - 1) // threads[0],  # z, upper half as in C++ implementation
             (Y + threads[1] - 1) // threads[1],
-            (Z // 2 + threads[2] - 1) // threads[2],  # process upper half (as in C++)
+            (X + threads[2] - 1) // threads[2],
         )
 
         fk_kernel(
@@ -96,16 +106,16 @@ def solve(data: NLOSCaptureData, downscale: int = 1) -> NLOSCaptureData.SingleRe
                 np.int32(X), np.int32(Y), np.int32(Z),
                 invX, invY, invZ,               # For saving computations
                 shiftX, shiftY, shiftZ,         # For avoiding computing stolt on the whole grid
-                np.float32(stolt_const_sq),
+                stolt_const_x_sq,
+                stolt_const_y_sq,
             ),
         )
         # cp.cuda.runtime.deviceSynchronize()
 
         # Inverse FFT back to time/space domain
         out_data = cp.fft.ifftn(out_data)
-        out_data = cp.real(out_data).astype(float_dtype)
-        out_data = out_data ** 2
+        out_data = cp.abs(out_data).astype(float_dtype)
         out_data = out_data.get()
         out_data = np.transpose(out_data, (1, 2, 0))  # swap x/y to match original orientation
 
-        return out_data[:N, :N, :M]
+        return out_data[:sx, :sy, :nt]

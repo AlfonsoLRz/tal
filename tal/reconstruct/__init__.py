@@ -28,6 +28,7 @@ def filter_H(data: _Data,
              border: str = 'zero',
              plot_filter: bool = False,
              return_filter: bool = False,
+             return_gpu: bool = False,
              progress: bool = True,
              **kwargs) -> NLOSCaptureData.HType:
     """
@@ -40,6 +41,8 @@ def filter_H(data: _Data,
         * If plot_filter=True, shows a plot of the resulting filter
         * If return_filter=True, returns the filter (K)
           else, returns the filtered signal (H * K)
+        * If return_gpu=True, returns a CuPy array. This is intended for
+          internal GPU reconstruction paths.
         * If progress=True, shows a progress bar with the performed step
 
     Available filters and respective arguments:
@@ -57,7 +60,9 @@ def filter_H(data: _Data,
         f'Filtering is not allowed if your data is in frequency domain (H_format = {data.H_format}). ' \
         'Probably your data is already filtered. If you are sure of what you are doing, use time-domain data instead.'
     from tal.reconstruct.filters import filter_H_impl
-    return filter_H_impl(data, filter_name, data_format, border, plot_filter, return_filter, progress, **kwargs)
+    return filter_H_impl(data, filter_name, data_format, border, plot_filter,
+                         return_filter, progress, return_gpu=return_gpu,
+                         **kwargs)
 
 
 def compensate_laser_cos_dsqr(data: NLOSCaptureData):

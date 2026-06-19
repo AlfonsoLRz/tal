@@ -27,6 +27,15 @@ setuptools.setup(
             '.tal.conf.example',
             'render/scene_defaults.yaml',
         ],
+        'tal.reconstruct.bp': [
+            'backprojection.cu',
+        ],
+        'tal.reconstruct.fk': [
+            'fk.cu',
+        ],
+        'tal.reconstruct.pf': [
+            'phasor_fields.cu',
+        ],
     },
     entry_points={
         'console_scripts': [

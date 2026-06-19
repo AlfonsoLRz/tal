@@ -62,16 +62,19 @@ def solve(data: NLOSCaptureData,
     """
     from tal.reconstruct import filter_H
     old_H = data.H
-    data.H = filter_H(data, filter_name='pf', border=border, wl_mean=wl_mean, wl_sigma=wl_sigma)
+    try:
+        data.H = filter_H(data, filter_name='pf', border=border,
+                          wl_mean=wl_mean, wl_sigma=wl_sigma,
+                          return_gpu=True)
 
-    from tal.reconstruct.bp import solve as bp_solve
-    H_1 = bp_solve(data,
-                   volume_xyz=volume_xyz,
-                   volume_format=volume_format,
-                   camera_system=camera_system,
-                   projector_focus=projector_focus,
-                   compensate_invsq=compensate_invsq,
-                   progress=progress)
-    data.H = old_H
-    print(H_1.shape)
+        from tal.reconstruct.bp import solve as bp_solve
+        H_1 = bp_solve(data,
+                       volume_xyz=volume_xyz,
+                       volume_format=volume_format,
+                       camera_system=camera_system,
+                       projector_focus=projector_focus,
+                       compensate_invsq=compensate_invsq,
+                       progress=progress)
+    finally:
+        data.H = old_H
     return H_1

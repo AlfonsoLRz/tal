@@ -42,10 +42,10 @@ def solve(data: NLOSCaptureData, c_wavelength: float, wave_cycles: float,
 
     downscale = get_resources().downscale
     if downscale is not None and downscale > 1:
-        data.downscale(downscale)
+        data.spatial_downscale(downscale)
 
-    pf_filter = HFilter('pf',delta_t = data.delta_t, n_w = data.H.shape[0], 
-                        lambda_c = c_wavelength, cycles=wave_cycles)
+    pf_filter = HFilter('pf', delta_t=data.delta_t, n_w=data.H.shape[0],
+                        lambda_c=c_wavelength, cycles=wave_cycles)
     # Data extraction
     H = data.H
     # Time extraction

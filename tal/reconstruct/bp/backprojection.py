@@ -62,7 +62,7 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
         projector_focus_arr = np.asarray(volume_xyz, dtype=np.float32)  # [nv, 3]
 
     # Transfer everything to GPU
-    H_0_gpu = cp.asarray(H_0, dtype=cp.float32)
+    H_0_gpu = cp.ascontiguousarray(cp.asarray(H_0, dtype=cp.float32))
     laser_grid_gpu = cp.asarray(laser_grid_xyz, dtype=cp.float32)               # [nl,3] or [ns,3]
     sensor_grid_gpu = cp.asarray(sensor_grid_xyz, dtype=cp.float32)             # [ns,3]
     volume_gpu = cp.asarray(volume_xyz, dtype=cp.float32)                       # [nv,3]
@@ -122,10 +122,7 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     )
     #cp.cuda.runtime.deviceSynchronize()
 
-    print(f'Launching backprojection kernel with blocks={blocks} and threads={threads}...')
-
     H_1 = H_1_gpu.get()
-    print(f'{volume_xyz.shape=}, {volume_xyz_shape=}, {H_1.shape=}')
     if camera_system.is_transient():
         H_1 = H_1.reshape((nt, *volume_xyz_shape))
     else:

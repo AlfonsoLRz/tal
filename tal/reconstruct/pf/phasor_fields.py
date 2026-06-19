@@ -11,9 +11,10 @@ from tal.io.capture_data import NLOSCaptureData
 from tal.enums import CameraSystem, VolumeFormat
 from tal.reconstruct.filters import HFilter
 from tal.log import log, LogLevel
-from tal.config import get_resources
-
+import os
 import numpy as np
+import cupy as cp
+from tal.config import get_resources
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from tqdm import tqdm
@@ -23,6 +24,70 @@ from tal.reconstruct.pf.propagator import Propagator, PropParams
 
 __epsilon = 1e-5
 c = 299_792_458
+
+parent_dir = os.path.abspath(os.path.dirname(__file__))
+with open(os.path.join(parent_dir, 'phasor_fields.cu'), 'r') as kernel_file:
+    pf_kernel_source = kernel_file.read()
+
+rsd_kernel = cp.RawKernel(
+    pf_kernel_source,
+    "rsdKernel",
+    options=("--use_fast_math",),
+)
+
+
+def _zero_rsd_kernel_coords(coords, target_shape):
+    ni, nj, _ = coords.shape
+    delta_i = np.linalg.norm(coords[0, 0] - coords[-1, 0]) / ni
+    delta_j = np.linalg.norm(coords[0, 0] - coords[0, -1]) / nj
+    vi = np.linspace(-delta_i * (target_shape[0] // 2) - delta_i,
+                     delta_i * (target_shape[0] // 2) + delta_i,
+                     target_shape[0])
+    vj = np.linspace(-delta_j * (target_shape[1] // 2) - delta_j,
+                     delta_j * (target_shape[1] // 2) + delta_j,
+                     target_shape[1])
+    return np.moveaxis(np.array(np.meshgrid(vi, vj, [0], indexing='ij')), 0, -1)[:, :, 0, :]
+
+
+def _try_reconstruct_planar_gpu(data, pf_filter, fH, V, volume_format, camera_system, Vp, by_point):
+    if Vp is not None or by_point or not data.is_confocal():
+        return None
+    if volume_format != VolumeFormat.X_Y_Z_3:
+        return None
+    if camera_system not in [CameraSystem.DIRECT_LIGHT, CameraSystem.TRANSIENT_T0]:
+        return None
+    if data.H.ndim != 3 or data.sensor_grid_xyz.shape[:2] != data.H.shape[1:]:
+        return None
+
+    from tal.reconstruct.util import can_parallel_convolution
+    if not can_parallel_convolution(data, V, 'sensor'):
+        return None
+
+    nw, sx, sy = fH.shape
+    depths = V[0, 0, :, 2].astype(np.float32)
+    kernel_shape = (2 * sx - 1, 2 * sy - 1)
+    coords = cp.asarray(_zero_rsd_kernel_coords(data.sensor_grid_xyz, kernel_shape), dtype=cp.float32)
+    omega = cp.asarray(pf_filter.omega, dtype=cp.float32)
+    fH_fft = cp.fft.fft2(cp.asarray(fH, dtype=cp.complex64), s=kernel_shape, axes=(1, 2))
+    K = cp.empty((nw, *kernel_shape), dtype=cp.complex64)
+    out = cp.empty((sx, sy, len(depths)), dtype=cp.complex64)
+    threads = (8, 8, 8)
+    blocks = (
+        (kernel_shape[1] + threads[0] - 1) // threads[0],
+        (kernel_shape[0] + threads[1] - 1) // threads[1],
+        (nw + threads[2] - 1) // threads[2],
+    )
+    twice = int(camera_system == CameraSystem.DIRECT_LIGHT)
+
+    log(LogLevel.INFO, 'tal.reconstruct.pf: Using GPU planar propagator')
+    for i, depth in enumerate(depths):
+        rsd_kernel(blocks, threads, (coords, omega, K, np.int32(nw),
+                                     np.int32(kernel_shape[0]), np.int32(kernel_shape[1]),
+                                     np.float32(depth), np.int32(twice)))
+        propagated = cp.fft.ifft2(fH_fft * cp.fft.fft2(K, axes=(1, 2)), axes=(1, 2))
+        out[..., i] = cp.sum(propagated[:, -sx:, -sy:], axis=0)
+
+    return out.get()
 
 def reconstruct(data: NLOSCaptureData, filter: HFilter, V: np.ndarray,
                 volume_format: VolumeFormat,
@@ -75,6 +140,10 @@ def reconstruct(data: NLOSCaptureData, filter: HFilter, V: np.ndarray,
 
     log(LogLevel.DEBUG, "Applying the filter")
     fH = filter.apply(data, True)
+    H_1_gpu = _try_reconstruct_planar_gpu(data, filter, fH, V, volume_format, camera_system, Vp, by_point)
+    if H_1_gpu is not None:
+        return H_1_gpu
+
     pf_propagator = Propagator(filter, propParams)
     
     # Configure the propagator

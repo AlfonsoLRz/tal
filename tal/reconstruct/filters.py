@@ -91,7 +91,8 @@ class HFilter:
 
 
 
-def filter_H_impl(data, filter_name, data_format, border, plot_filter, return_filter, progress, **kwargs):
+def filter_H_impl(data, filter_name, data_format, border, plot_filter,
+                  return_filter, progress, return_gpu=False, **kwargs):
     if isinstance(data, NLOSCaptureData):
         assert data.H_format != HFormat.UNKNOWN or data_format is not None, \
             'H format must be specified through the NLOSCaptureData object or the data_format argument'
@@ -170,7 +171,7 @@ def filter_H_impl(data, filter_name, data_format, border, plot_filter, return_fi
                  c='r')
         plt.show()
     if return_filter:
-        return K
+        return cp.asarray(K) if return_gpu else K
 
     padding = (nt_pad - nt)
     assert padding % 2 == 0
@@ -212,11 +213,14 @@ def filter_H_impl(data, filter_name, data_format, border, plot_filter, return_fi
         pbar.update(1)
         pbar.close()
 
-    HoK = d_HoK.real.get()  # Convert back to numpy array
+    HoK = d_HoK.real
 
     # undo padding
-    HoK = HoK[padding:-padding, ...]
-    if border == 'erase':
+    if padding > 0:
+        HoK = HoK[padding:-padding, ...]
+    if border == 'erase' and padding > 0:
         HoK[:padding//2] = 0
         HoK[-padding//2:] = 0
-    return HoK
+    if return_gpu:
+        return cp.ascontiguousarray(HoK)
+    return HoK.get()  # Convert back to numpy array
