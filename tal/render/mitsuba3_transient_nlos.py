@@ -501,11 +501,12 @@ def get_scene_xml(config, random_seed=0):
             def shapify(content, filename):
                 return fdent('''\
                 {shape_name}
-                <shape type="obj">
+                <shape type="obj"{shape_id}>
                     <string name="filename" value="{filename}"/>
 
                     {content}
-                </shape>''', shape_name=shape_name, filename=filename, content=content)
+                </shape>''', shape_name=shape_name, filename=filename, content=content,
+                             shape_id=' id="relay_wall"' if is_relay_wall else '')
 
             shapes_steady.append(
                 shapify(shape_contents_steady, filename))

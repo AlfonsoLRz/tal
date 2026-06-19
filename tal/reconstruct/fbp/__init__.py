@@ -73,4 +73,5 @@ def solve(data: NLOSCaptureData,
                    compensate_invsq=compensate_invsq,
                    progress=progress)
     data.H = old_H
+    print(H_1.shape)
     return H_1

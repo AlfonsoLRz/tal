@@ -89,4 +89,6 @@ def solve(data: NLOSCaptureData,
         compensate_invsq=compensate_invsq,
         progress=progress)
 
+    print(reconstructed_volume_n3.shape)
+
     return convert_reconstruction_from_N_3(data, reconstructed_volume_n3, volume_xyz, volume_format, camera_system)

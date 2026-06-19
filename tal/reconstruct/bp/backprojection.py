@@ -44,7 +44,7 @@ void backproject_kernel(
     float vx = volume_xyz[3*v + 0];
     float vy = volume_xyz[3*v + 1];
     float vz = volume_xyz[3*v + 2];
-
+    
     float sx = sensor_grid[3*s + 0];
     float sy = sensor_grid[3*s + 1];
     float sz = sensor_grid[3*s + 2];
@@ -147,9 +147,6 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     nt, nl, ns = H_0.shape
     nv, _ = volume_xyz.shape
 
-    print(H_0.shape, volume_xyz.shape)
-    print(nt, nl, ns, nv)
-
     if is_laser_paired_to_sensor:
         assert laser_grid_xyz.shape[0] == ns, 'H does not match with laser_grid_xyz'
     else:
@@ -180,7 +177,8 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
     volume_gpu = cp.asarray(volume_xyz, dtype=cp.float32)                       # [nv,3]
     projector_focus_gpu = cp.asarray(projector_focus_arr, dtype=cp.float32)     # [nv,3]
 
-    # If null, set to zero; TODO: check if it is possible to pass a null pointer to the CUDA kernel instead and avoid this step
+    # If null, set to zero;
+    # TODO: check if it is possible to pass a null pointer to the CUDA kernel instead and avoid this step
     if laser_xyz is None:
         laser_xyz_arr = np.zeros(3, dtype=np.float32)
     else:
@@ -232,6 +230,8 @@ def backproject(H_0, laser_grid_xyz, sensor_grid_xyz, volume_xyz, volume_xyz_sha
         ),
     )
     #cp.cuda.runtime.deviceSynchronize()
+
+    print(f'Launching backprojection kernel with blocks={blocks} and threads={threads}...')
 
     H_1 = H_1_gpu.get()
     if camera_system.is_transient():

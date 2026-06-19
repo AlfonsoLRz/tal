@@ -121,9 +121,9 @@ def get_volume_min_max_resolution(minimal_pos, maximal_pos, resolution):
     assert np.all(maximal_pos > minimal_pos), \
         'maximal_pos must be greater than minimal_pos'
     e = resolution / 2  # half-voxel
-    return np.moveaxis(np.mgrid[minimal_pos[0]+e:maximal_pos[0]:resolution,
+    return np.ascontiguousarray(np.moveaxis(np.mgrid[minimal_pos[0]+e:maximal_pos[0]:resolution,
                                 minimal_pos[1]+e:maximal_pos[1]:resolution,
-                                minimal_pos[2]+e:maximal_pos[2]:resolution], 0, -1)
+                                minimal_pos[2]+e:maximal_pos[2]:resolution], 0, -1))
 
 
 def get_volume_project_rw(data: NLOSCaptureData, depths: Union[float, list]):
